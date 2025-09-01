@@ -8,3 +8,6 @@ from langchain_chroma import Chroma
 from langchain.chains import RetrievalQA
 from langchain_ollama import OllamaLLM
 
+loader = UnstructuredWordDocumentLoader('./backend/ScrumZero Paper.docx')
+docs = loader.load()
+print(docs)
