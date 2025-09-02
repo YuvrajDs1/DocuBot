@@ -11,7 +11,6 @@ if uploaded_file and question:
         "file": (uploaded_file.name, uploaded_file, uploaded_file.type)
     }
 
-    # Pass question as query param
     response = requests.post(
         f"http://127.0.0.1:8000/ask/?question={question}",
         files=files,

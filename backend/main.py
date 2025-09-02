@@ -1,4 +1,3 @@
-# main.py
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse
 import os
@@ -14,7 +13,6 @@ async def upload_file(file: UploadFile = File(...)):
     return {"file_name": file.filename, "file_location": file_location}
 
 
-# ------- LangChain & deps -------
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
@@ -26,7 +24,6 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from dotenv import load_dotenv
 load_dotenv()
 
-# --------- Loaders ----------
 def load_document(file_path: str):
     ext = os.path.splitext(file_path)[1].lower()
     if ext == ".pdf":
@@ -37,20 +34,14 @@ def load_document(file_path: str):
         raise ValueError("Unsupported file type (use .pdf or .docx)")
     return loader.load()
 
-# --------- Chunking ----------
 def split_document(documents):
-    # Bigger chunks give the LLM more context to answer
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     return splitter.split_documents(documents)
 
-# --------- Embeddings / Vectorstore ----------
 def create_vectorstore(docs):
-    # Requires: pip install langchain-huggingface sentence-transformers
     embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-    # In-memory Chroma (avoid Windows file locks)
     return Chroma.from_documents(docs, embedding=embeddings)
 
-# --------- QA chain with custom prompt ----------
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 if not GROQ_API_KEY:
     raise ValueError("GROQ_API_KEY not found in .env")
@@ -66,7 +57,7 @@ QA_PROMPT = PromptTemplate(
 
 def create_qa_chain(vector_store):
     retriever = vector_store.as_retriever(search_kwargs={"k": 5})
-    llm = ChatGroq(model="llama-3.1-8b-instant")  # uses env var
+    llm = ChatGroq(model="llama-3.1-8b-instant") 
     return RetrievalQA.from_chain_type(
         llm=llm,
         retriever=retriever,
@@ -75,7 +66,7 @@ def create_qa_chain(vector_store):
         return_source_documents=True,
     )
 
-# --------- API route ----------
+
 @app.post("/ask/")
 async def ask_question(file: UploadFile = File(...), question: str = ""):
     try:
@@ -87,22 +78,22 @@ async def ask_question(file: UploadFile = File(...), question: str = ""):
         with open(file_location, "wb") as f:
             f.write(await file.read())
 
-        # Load → Split → Embed → Vectorstore
+        
         documents = load_document(file_location)
         docs = split_document(documents)
         vectordb = create_vectorstore(docs)
         qa_chain = create_qa_chain(vectordb)
 
-        # Run retrieval QA
+  
         result = qa_chain.invoke({"query": question})
         answer = result["result"]
         source_docs = result.get("source_documents", [])
         sources_preview = [d.page_content[:300] for d in source_docs]
 
-        # Debug: how many chunks did we retrieve?
+
         print(f"Retrieved {len(source_docs)} source docs")
 
-        # Fallback: if nothing was retrieved or LLM gave generic fallback, answer from whole doc
+        
         generic_markers = [
             "no context provided",
             "you haven't provided any context",
@@ -111,10 +102,10 @@ async def ask_question(file: UploadFile = File(...), question: str = ""):
         if len(source_docs) == 0 or any(m in answer.lower() for m in generic_markers):
             print("Fallback to full-document answer")
             # Stuff first N chunks directly
-            context = "\n\n".join(d.page_content for d in docs[:8])  # keep prompt size manageable
+            context = "\n\n".join(d.page_content for d in docs[:8])  
             llm = ChatGroq(model="llama-3.1-8b-instant")
             fallback_prompt = QA_PROMPT.format(context=context, question=question)
-            # minimalist call via LC's LLM .invoke
+
             fallback = llm.invoke(fallback_prompt)
             answer = fallback.content if hasattr(fallback, "content") else str(fallback)
             sources_preview = [d.page_content[:300] for d in docs[:3]]
