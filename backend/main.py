@@ -1,69 +1,127 @@
-# FastAPI setup
+# main.py
 from fastapi import FastAPI, UploadFile, File
-from pydantic import BaseModel
-from fastapi.responses import JSONResponse, HTMLResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from typing import Union, List
+from fastapi.responses import JSONResponse
+import os
 
 app = FastAPI()
 
-@app.post('/upload/')
+@app.post("/upload/")
 async def upload_file(file: UploadFile = File(...)):
-    file_location = f'temp_files/{file.filename}'
-    with open(file_location, 'wb') as f:
+    os.makedirs("temp_files", exist_ok=True)
+    file_location = f"temp_files/{file.filename}"
+    with open(file_location, "wb") as f:
         f.write(await file.read())
-    return {'file_name': file.filename, 'file_location': file_location}
+    return {"file_name": file.filename, "file_location": file_location}
 
-# Langchain core
-from langchain_community.document_loaders import UnstructuredPDFLoader
-from langchain_community.document_loaders import UnstructuredWordDocumentLoader
+
+# ------- LangChain & deps -------
+from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import OllamaEmbeddings
 from langchain_chroma import Chroma
 from langchain.chains import RetrievalQA
-from langchain_ollama import OllamaLLM
+from langchain.prompts import PromptTemplate
+from langchain_groq import ChatGroq
+from langchain_huggingface import HuggingFaceEmbeddings
 
+from dotenv import load_dotenv
+load_dotenv()
+
+# --------- Loaders ----------
 def load_document(file_path: str):
-    if file_path.endswith('.pdf'):
-        loader = UnstructuredPDFLoader(file_path)
-
-    elif file_path.endswith('.docx'):
-        loader = UnstructuredWordDocumentLoader(file_path)
-
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext == ".pdf":
+        loader = PyPDFLoader(file_path)
+    elif ext == ".docx":
+        loader = Docx2txtLoader(file_path)
     else:
-        raise ValueError('Unsupported file type')
-    document = loader.load()
-    return document
+        raise ValueError("Unsupported file type (use .pdf or .docx)")
+    return loader.load()
 
-def split_document(document):
-    splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=100)
-    docs = splitter.split_documents(document)
-    return docs
+# --------- Chunking ----------
+def split_document(documents):
+    # Bigger chunks give the LLM more context to answer
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    return splitter.split_documents(documents)
 
+# --------- Embeddings / Vectorstore ----------
 def create_vectorstore(docs):
-    embeddings = OllamaEmbeddings(model='nomic-embed-text')
-    vector_store = Chroma.from_documents(docs,embedding=embeddings)
-    return vector_store
+    # Requires: pip install langchain-huggingface sentence-transformers
+    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    # In-memory Chroma (avoid Windows file locks)
+    return Chroma.from_documents(docs, embedding=embeddings)
+
+# --------- QA chain with custom prompt ----------
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+if not GROQ_API_KEY:
+    raise ValueError("GROQ_API_KEY not found in .env")
+
+QA_PROMPT = PromptTemplate(
+    input_variables=["context", "question"],
+    template=(
+        "You are a helpful assistant. Use ONLY the context to answer the question.\n"
+        "If the answer is not in the context, say: 'I could not find the answer in the document.'\n\n"
+        "Context:\n{context}\n\nQuestion: {question}\nAnswer:"
+    ),
+)
 
 def create_qa_chain(vector_store):
-    llm = OllamaLLM(model='gemma:2b')
-    qa = RetrievalQA.from_chain_type(
+    retriever = vector_store.as_retriever(search_kwargs={"k": 5})
+    llm = ChatGroq(model="llama-3.1-8b-instant")  # uses env var
+    return RetrievalQA.from_chain_type(
         llm=llm,
-        retriever=vector_store.as_retriever(),
-        chain_type='refine'
+        retriever=retriever,
+        chain_type="stuff",
+        chain_type_kwargs={"prompt": QA_PROMPT},
+        return_source_documents=True,
     )
-    return qa
 
-@app.post('/ask/')
-async def ask_question(file: UploadFile = File(...), question: str=""):
-    file_location = f'temp_files/{file.filename}'
-    with open(file_location, 'wb') as f:
-        f.write(await file.read())
-    document = load_document(file_location)
-    split = split_document(document)
-    vectordb = create_vectorstore(split)
-    qa_chain = create_qa_chain(vectordb)
+# --------- API route ----------
+@app.post("/ask/")
+async def ask_question(file: UploadFile = File(...), question: str = ""):
+    try:
+        if not question or not question.strip():
+            return JSONResponse({"error": "Question is empty"}, status_code=400)
 
-    answer = qa_chain.run(question)
-    return JSONResponse({'answer': answer})
+        os.makedirs("temp_files", exist_ok=True)
+        file_location = f"temp_files/{file.filename}"
+        with open(file_location, "wb") as f:
+            f.write(await file.read())
+
+        # Load → Split → Embed → Vectorstore
+        documents = load_document(file_location)
+        docs = split_document(documents)
+        vectordb = create_vectorstore(docs)
+        qa_chain = create_qa_chain(vectordb)
+
+        # Run retrieval QA
+        result = qa_chain.invoke({"query": question})
+        answer = result["result"]
+        source_docs = result.get("source_documents", [])
+        sources_preview = [d.page_content[:300] for d in source_docs]
+
+        # Debug: how many chunks did we retrieve?
+        print(f"Retrieved {len(source_docs)} source docs")
+
+        # Fallback: if nothing was retrieved or LLM gave generic fallback, answer from whole doc
+        generic_markers = [
+            "no context provided",
+            "you haven't provided any context",
+            "i could not find the answer",
+        ]
+        if len(source_docs) == 0 or any(m in answer.lower() for m in generic_markers):
+            print("Fallback to full-document answer")
+            # Stuff first N chunks directly
+            context = "\n\n".join(d.page_content for d in docs[:8])  # keep prompt size manageable
+            llm = ChatGroq(model="llama-3.1-8b-instant")
+            fallback_prompt = QA_PROMPT.format(context=context, question=question)
+            # minimalist call via LC's LLM .invoke
+            fallback = llm.invoke(fallback_prompt)
+            answer = fallback.content if hasattr(fallback, "content") else str(fallback)
+            sources_preview = [d.page_content[:300] for d in docs[:3]]
+
+        return {"answer": answer, "sources": sources_preview}
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse({"error": str(e)}, status_code=500)
