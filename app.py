@@ -1,9 +1,8 @@
 import streamlit as st
 import requests
 import time
-import os  # Added for environment variable support
+import os  
 
-# Use environment variable BACKEND_URL if set; otherwise default to your deployed backend
 BACKEND_URL = os.getenv("BACKEND_URL", "https://docubot-6v6r.onrender.com")
 
 st.set_page_config(
