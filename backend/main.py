@@ -18,7 +18,6 @@ load_dotenv()
 
 app = FastAPI()
 
-# Use system temp directory instead of relative path
 TEMP_DIR = Path(tempfile.gettempdir()) / "docubot_files"
 TEMP_DIR.mkdir(exist_ok=True)
 
@@ -33,7 +32,6 @@ def cleanup_file(file_path: str):
 
 @app.post("/upload/")
 async def upload_file(file: UploadFile = File(...)):
-    # Generate unique filename to avoid conflicts
     unique_id = str(uuid.uuid4())
     file_extension = os.path.splitext(file.filename)[1]
     unique_filename = f"{unique_id}_{file.filename}"
@@ -100,31 +98,26 @@ async def ask_question(file: UploadFile = File(...), question: str = Form()):
     temp_file_path = None
     
     try:
-        # Validate question
         if not question or not question.strip():
             raise HTTPException(status_code=400, detail="Question is required and cannot be empty")
 
-        # Create unique temporary file path
         unique_id = str(uuid.uuid4())
         filename = file.filename or "unknown_file"
         file_extension = os.path.splitext(filename)[1]
         unique_filename = f"{unique_id}_{filename}"
         temp_file_path = TEMP_DIR / unique_filename
 
-        # Save uploaded file
         with open(temp_file_path, "wb") as f:
             content = await file.read()
             f.write(content)
 
         print(f"Processing file: {temp_file_path}")
         
-        # Load and process document
         documents = load_document(str(temp_file_path))
         docs = split_document(documents)
         vectordb = create_vectorstore(docs)
         qa_chain = create_qa_chain(vectordb)
 
-        # Get answer from QA chain
         result = qa_chain.invoke({"query": question})
         answer = result["result"]
         source_docs = result.get("source_documents", [])
@@ -132,7 +125,6 @@ async def ask_question(file: UploadFile = File(...), question: str = Form()):
 
         print(f"Retrieved {len(source_docs)} source docs")
 
-        # Fallback logic if no good answer found
         generic_markers = [
             "no context provided",
             "you haven't provided any context",
@@ -141,7 +133,6 @@ async def ask_question(file: UploadFile = File(...), question: str = Form()):
         
         if len(source_docs) == 0 or any(m in answer.lower() for m in generic_markers):
             print("Fallback to full-document answer")
-            # Use first N chunks directly as context
             context = "\n\n".join(d.page_content for d in docs[:8])  
             llm = ChatGroq(model="llama-3.1-8b-instant")
             fallback_prompt = QA_PROMPT.format(context=context, question=question)
@@ -158,7 +149,6 @@ async def ask_question(file: UploadFile = File(...), question: str = Form()):
         return JSONResponse({"error": str(e)}, status_code=500)
     
     finally:
-        # Always cleanup temp file
         if temp_file_path and os.path.exists(temp_file_path):
             cleanup_file(str(temp_file_path))
 

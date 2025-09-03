@@ -2,14 +2,14 @@ import streamlit as st
 import requests
 import time
 
-# Page config
+
 st.set_page_config(
     page_title="DocuBot", 
     page_icon="🤖",
     layout="wide"
 )
 
-# Custom CSS for better styling
+
 st.markdown("""
 <style>
     .main-header {
@@ -32,15 +32,14 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Main title
+
 st.markdown('<h1 class="main-header">DocuBot 🤖</h1>', unsafe_allow_html=True)
 st.markdown("**Upload a document and ask questions about its content!**")
 
-# Create two columns for better layout
 col1, col2 = st.columns([2, 1])
 
 with col1:
-    # File upload section
+
     st.markdown('<div class="upload-section">', unsafe_allow_html=True)
     st.subheader("📄 Upload Document")
     uploaded_file = st.file_uploader(
@@ -51,7 +50,7 @@ with col1:
     )
     st.markdown('</div>', unsafe_allow_html=True)
     
-    # Question input section
+
     st.markdown('<div class="question-section">', unsafe_allow_html=True)
     st.subheader("❓ Ask Question")
     question = st.text_area(
@@ -75,15 +74,11 @@ with col2:
     - Check sources to verify information
     """)
 
-# Process button and results
 if uploaded_file and question:
-    # Add a submit button for better UX
     if st.button("🚀 Get Answer", type="primary", use_container_width=True):
         
-        # Show processing message
         with st.spinner('🔍 Processing your document and analyzing the question...'):
             try:
-                # Prepare the request
                 files = {
                     "file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)
                 }
@@ -91,29 +86,25 @@ if uploaded_file and question:
                     "question": question
                 }
                 
-                # Make request to FastAPI backend
                 start_time = time.time()
                 response = requests.post(
                     "http://127.0.0.1:8000/ask/",
                     files=files,
                     data=data,
-                    timeout=120  # 2 minute timeout
+                    timeout=120
                 )
                 processing_time = time.time() - start_time
                 
                 if response.status_code == 200:
                     res = response.json()
                     
-                    # Success message
                     st.success(f"✅ Answer generated in {processing_time:.2f} seconds!")
                     
-                    # Display answer in a nice container
                     st.markdown("### 🎯 Answer:")
                     answer_container = st.container()
                     with answer_container:
                         st.markdown(f"**{res['answer']}**")
                     
-                    # Display sources
                     if "sources" in res and res["sources"]:
                         st.markdown("### 📚 Sources:")
                         with st.expander(f"View {len(res['sources'])} source(s)", expanded=False):
@@ -153,11 +144,9 @@ elif question and not uploaded_file:
 else:
     st.info("👆 Upload a document and enter a question to get started!")
 
-# Sidebar with additional controls
 with st.sidebar:
     st.markdown("## 🛠️ Controls")
     
-    # Server status check
     if st.button("🔍 Check Server Status"):
         try:
             health_response = requests.get("http://127.0.0.1:8000/health", timeout=5)
@@ -170,7 +159,6 @@ with st.sidebar:
         except:
             st.error("❌ Server is not running")
     
-    # Cleanup button
     if st.button("🧹 Clean Server Files"):
         try:
             cleanup_response = requests.delete("http://127.0.0.1:8000/cleanup/", timeout=10)
