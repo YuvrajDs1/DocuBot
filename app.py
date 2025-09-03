@@ -1,14 +1,16 @@
 import streamlit as st
 import requests
 import time
+import os  # Added for environment variable support
 
+# Use environment variable BACKEND_URL if set; otherwise default to your deployed backend
+BACKEND_URL = os.getenv("BACKEND_URL", "https://docubot-6v6r.onrender.com")
 
 st.set_page_config(
-    page_title="DocuBot", 
+    page_title="DocuBot",
     page_icon="🤖",
     layout="wide"
 )
-
 
 st.markdown("""
 <style>
@@ -32,7 +34,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-
 st.markdown('<h1 class="main-header">DocuBot 🤖</h1>', unsafe_allow_html=True)
 st.markdown("**Upload a document and ask questions about its content!**")
 
@@ -43,13 +44,12 @@ with col1:
     st.markdown('<div class="upload-section">', unsafe_allow_html=True)
     st.subheader("📄 Upload Document")
     uploaded_file = st.file_uploader(
-        "Choose a PDF or Word file", 
+        "Choose a PDF or Word file",
         type=['pdf', 'docx'],
         help="Supported formats: PDF (.pdf) and Word documents (.docx)",
         label_visibility="collapsed"
     )
     st.markdown('</div>', unsafe_allow_html=True)
-    
 
     st.markdown('<div class="question-section">', unsafe_allow_html=True)
     st.subheader("❓ Ask Question")
@@ -76,19 +76,16 @@ with col2:
 
 if uploaded_file and question:
     if st.button("🚀 Get Answer", type="primary", use_container_width=True):
-        
         with st.spinner('🔍 Processing your document and analyzing the question...'):
             try:
                 files = {
                     "file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)
                 }
-                data = {
-                    "question": question
-                }
+                data = {"question": question}
                 
                 start_time = time.time()
                 response = requests.post(
-                    "http://127.0.0.1:8000/ask/",
+                    f"{BACKEND_URL}/ask/",
                     files=files,
                     data=data,
                     timeout=120
@@ -97,9 +94,7 @@ if uploaded_file and question:
                 
                 if response.status_code == 200:
                     res = response.json()
-                    
                     st.success(f"✅ Answer generated in {processing_time:.2f} seconds!")
-                    
                     st.markdown("### 🎯 Answer:")
                     answer_container = st.container()
                     with answer_container:
@@ -114,7 +109,7 @@ if uploaded_file and question:
                                     f"Content from source {i}",
                                     value=src,
                                     height=120,
-                                    key=f"source_{i}_{hash(src[:50])}",  # Unique key
+                                    key=f"source_{i}_{hash(src[:50])}",
                                     label_visibility="collapsed"
                                 )
                                 if i < len(res["sources"]):
@@ -131,9 +126,9 @@ if uploaded_file and question:
                     
             except requests.exceptions.ConnectionError:
                 st.error("❌ **Connection Error**: Cannot connect to the backend server.")
-                st.info("Make sure your FastAPI server is running with: `uvicorn main:app --reload --host 127.0.0.1 --port 8000`")
+                st.info(f"Make sure your backend is running and accessible at {BACKEND_URL}")
             except requests.exceptions.Timeout:
-                st.error("❌ **Timeout Error**: The request took too long to process. Try with a smaller document.")
+                st.error("❌ **Timeout Error**: The request took too long to process. Try a smaller document.")
             except Exception as e:
                 st.error(f"❌ **Unexpected Error**: {str(e)}")
 
@@ -149,11 +144,10 @@ with st.sidebar:
     
     if st.button("🔍 Check Server Status"):
         try:
-            health_response = requests.get("http://127.0.0.1:8000/health", timeout=5)
+            health_response = requests.get(f"{BACKEND_URL}/health", timeout=5)
             if health_response.status_code == 200:
                 st.success("✅ Server is running!")
-                health_data = health_response.json()
-                st.json(health_data)
+                st.json(health_response.json())
             else:
                 st.error("❌ Server not responding properly")
         except:
@@ -161,7 +155,7 @@ with st.sidebar:
     
     if st.button("🧹 Clean Server Files"):
         try:
-            cleanup_response = requests.delete("http://127.0.0.1:8000/cleanup/", timeout=10)
+            cleanup_response = requests.delete(f"{BACKEND_URL}/cleanup/", timeout=10)
             if cleanup_response.status_code == 200:
                 st.success("✅ Server files cleaned up!")
             else:
@@ -184,4 +178,3 @@ with st.sidebar:
     - Clear, specific questions work best
     - Wait for processing to complete
     """)
-
