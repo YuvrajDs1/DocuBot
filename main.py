@@ -21,35 +21,10 @@ app = FastAPI()
 TEMP_DIR = Path(tempfile.gettempdir()) / "docubot_files"
 TEMP_DIR.mkdir(exist_ok=True)
 
-def cleanup_file(file_path: str):
-    """Safely delete a temporary file"""
-    try:
-        if os.path.exists(file_path):
-            os.remove(file_path)
-            print(f"Cleaned up: {file_path}")
-    except Exception as e:
-        print(f"Error cleaning up {file_path}: {e}")
 
-@app.post("/upload/")
-async def upload_file(file: UploadFile = File(...)):
-    unique_id = str(uuid.uuid4())
-    file_extension = os.path.splitext(file.filename)[1]
-    unique_filename = f"{unique_id}_{file.filename}"
-    
-    file_location = TEMP_DIR / unique_filename
-    
-    try:
-        with open(file_location, "wb") as f:
-            content = await file.read()
-            f.write(content)
-        
-        return {
-            "file_name": file.filename,
-            "file_location": str(file_location),
-            "unique_id": unique_id
-        }
-    except Exception as e:
-        return JSONResponse({"error": f"Failed to upload file: {str(e)}"}, status_code=500)
+embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+vectorstores = {}  # in-memory store {file_id: Chroma}
+
 
 def load_document(file_path: str):
     ext = os.path.splitext(file_path)[1].lower()
@@ -61,17 +36,17 @@ def load_document(file_path: str):
         raise ValueError("Unsupported file type (use .pdf or .docx)")
     return loader.load()
 
+
 def split_document(documents):
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     return splitter.split_documents(documents)
 
-def create_vectorstore(docs):
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-    return Chroma.from_documents(docs, embedding=embeddings)
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-if not GROQ_API_KEY:
-    raise ValueError("GROQ_API_KEY not found in .env")
+def create_vectorstore(docs, file_id: str):
+    vectordb = Chroma.from_documents(docs, embedding=embeddings)
+    vectorstores[file_id] = vectordb
+    return vectordb
+
 
 QA_PROMPT = PromptTemplate(
     input_variables=["context", "question"],
@@ -82,9 +57,10 @@ QA_PROMPT = PromptTemplate(
     ),
 )
 
+
 def create_qa_chain(vector_store):
     retriever = vector_store.as_retriever(search_kwargs={"k": 5})
-    llm = ChatGroq(model="llama-3.1-8b-instant") 
+    llm = ChatGroq(model="llama-3.1-8b-instant")
     return RetrievalQA.from_chain_type(
         llm=llm,
         retriever=retriever,
@@ -93,29 +69,40 @@ def create_qa_chain(vector_store):
         return_source_documents=True,
     )
 
-@app.post("/ask/")
-async def ask_question(file: UploadFile = File(...), question: str = Form()):
-    temp_file_path = None
-    
+
+
+@app.post("/upload/")
+async def upload_file(file: UploadFile = File(...)):
+    """Upload and index a document, return file_id for later queries"""
+    file_id = str(uuid.uuid4())
+    file_extension = os.path.splitext(file.filename)[1]
+    unique_filename = f"{file_id}_{file.filename}"
+    file_location = TEMP_DIR / unique_filename
+
     try:
-        if not question or not question.strip():
-            raise HTTPException(status_code=400, detail="Question is required and cannot be empty")
-
-        unique_id = str(uuid.uuid4())
-        filename = file.filename or "unknown_file"
-        file_extension = os.path.splitext(filename)[1]
-        unique_filename = f"{unique_id}_{filename}"
-        temp_file_path = TEMP_DIR / unique_filename
-
-        with open(temp_file_path, "wb") as f:
+        with open(file_location, "wb") as f:
             content = await file.read()
             f.write(content)
 
-        print(f"Processing file: {temp_file_path}")
-        
-        documents = load_document(str(temp_file_path))
+        # Process once
+        documents = load_document(str(file_location))
         docs = split_document(documents)
-        vectordb = create_vectorstore(docs)
+        create_vectorstore(docs, file_id)
+
+        return {"file_id": file_id, "file_name": file.filename}
+
+    except Exception as e:
+        return JSONResponse({"error": f"Failed to upload file: {str(e)}"}, status_code=500)
+
+
+@app.post("/ask/")
+async def ask_question(file_id: str = Form(...), question: str = Form(...)):
+    """Ask a question about an already uploaded document"""
+    try:
+        if file_id not in vectorstores:
+            raise HTTPException(status_code=404, detail="File not found or not uploaded")
+
+        vectordb = vectorstores[file_id]
         qa_chain = create_qa_chain(vectordb)
 
         result = qa_chain.invoke({"query": question})
@@ -123,53 +110,32 @@ async def ask_question(file: UploadFile = File(...), question: str = Form()):
         source_docs = result.get("source_documents", [])
         sources_preview = [d.page_content[:300] for d in source_docs]
 
-        print(f"Retrieved {len(source_docs)} source docs")
-
-        generic_markers = [
-            "no context provided",
-            "you haven't provided any context",
-            "i could not find the answer",
-        ]
-        
-        if len(source_docs) == 0 or any(m in answer.lower() for m in generic_markers):
-            print("Fallback to full-document answer")
-            context = "\n\n".join(d.page_content for d in docs[:8])  
-            llm = ChatGroq(model="llama-3.1-8b-instant")
-            fallback_prompt = QA_PROMPT.format(context=context, question=question)
-
-            fallback = llm.invoke(fallback_prompt)
-            answer = fallback.content if hasattr(fallback, "content") else str(fallback)
-            sources_preview = [d.page_content[:300] for d in docs[:3]]
-
         return {"answer": answer, "sources": sources_preview}
 
     except Exception as e:
         import traceback
         traceback.print_exc()
         return JSONResponse({"error": str(e)}, status_code=500)
-    
-    finally:
-        if temp_file_path and os.path.exists(temp_file_path):
-            cleanup_file(str(temp_file_path))
+
 
 @app.delete("/cleanup/")
 async def cleanup_all_files():
-    """Clean up all temporary files"""
+    """Clear all temporary files and memory vectorstores"""
     try:
         import shutil
+        vectorstores.clear()
         if TEMP_DIR.exists():
             shutil.rmtree(TEMP_DIR)
             TEMP_DIR.mkdir(exist_ok=True)
-            return {"message": "All temporary files cleaned up successfully"}
-        else:
-            return {"message": "No temporary files to clean up"}
+        return {"message": "All temporary files and vectorstores cleaned up successfully"}
     except Exception as e:
         return JSONResponse({"error": f"Cleanup failed: {str(e)}"}, status_code=500)
 
+
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
-    return {"status": "healthy", "temp_dir": str(TEMP_DIR)}
+    return {"status": "healthy", "temp_dir": str(TEMP_DIR), "active_files": len(vectorstores)}
+
 
 if __name__ == "__main__":
     import uvicorn
