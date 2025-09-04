@@ -25,3 +25,8 @@ It uses:
 - Ask natural questions about the content
 - Displays **answers + retrieved sources**
 - Fallback to full-document answer if retrieval fails
+
+## Deployment
+
+- Frontend and Backend deployed on Render.
+Link to access the app: https://docubot-frontend-y0n6.onrender.com/
